@@ -24,6 +24,7 @@ defaults:
 
 env:
   ENVIRONMENT: production
+  SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
 
 jobs:
   build-backend:
@@ -175,11 +176,11 @@ jobs:
         run: |
           set -euo pipefail
           echo 'Checking SSH connectivity'
-          ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "test -w /tmp"
+          ssh -p "$SSH_PORT" -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "test -w /tmp"
           echo 'Uploading backend artifact'
-          scp -O -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new backend-source.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/backend-source.tar.gz"
+          scp -P "$SSH_PORT" -O -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new backend-source.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/backend-source.tar.gz"
           echo 'Uploading frontend artifact'
-          scp -O -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new frontend-build.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/frontend-build.tar.gz"
+          scp -P "$SSH_PORT" -O -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new frontend-build.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/frontend-build.tar.gz"
 
       - name: Execute remote deployment script
         env:
@@ -188,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           REMOTE_ENV="DATABASE_URL=$(printf '%q' "$DATABASE_URL") FLASK_SECRET_KEY=$(printf '%q' "$FLASK_SECRET_KEY")"
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "${REMOTE_ENV} bash -s" <<'EOF'
+          ssh -p "$SSH_PORT" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "${REMOTE_ENV} bash -s" <<'EOF'
             set -euo pipefail
             REMOTE_BASE=/opt/myapp
             REMOTE_BACKEND=${REMOTE_BASE}/backend
