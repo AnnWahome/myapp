@@ -1,0 +1,345 @@
+name: Production Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/**/*.md'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy-${{ github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ${{ github.workspace }}
+
+env:
+  ENVIRONMENT: production
+
+jobs:
+  build-backend:
+    name: Build Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Pipenv
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install pipenv
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: python-${{ runner.os }}-pip-${{ hashFiles('backend/Pipfile.lock') }}
+          restore-keys: |
+            python-${{ runner.os }}-pip-
+
+      - name: Install backend dependencies
+        run: |
+          set -euo pipefail
+          cd backend
+          pipenv sync --dev
+
+      - name: Run backend tests if present
+        run: |
+          set -euo pipefail
+          cd backend
+          if [ -d tests ] || find . -maxdepth 2 -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
+            pipenv run python -m pip install pytest
+            pipenv run pytest
+          else
+            echo 'No backend tests detected. Skipping.'
+          fi
+
+      - name: Generate backend requirements file
+        run: |
+          set -euo pipefail
+          cd backend
+          pipenv lock -r > requirements.txt
+
+      - name: Package backend artifact
+        run: |
+          set -euo pipefail
+          tar -czf backend-source.tar.gz -C backend .
+
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-source
+          path: backend-source.tar.gz
+
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: |
+          set -euo pipefail
+          cd culinaryconnect
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build React app
+        run: |
+          set -euo pipefail
+          cd culinaryconnect
+          npm run build
+
+      - name: Package frontend build artifact
+        run: |
+          set -euo pipefail
+          tar -czf frontend-build.tar.gz -C culinaryconnect/build .
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend-build.tar.gz
+
+  deploy:
+    name: Deploy to Web Server
+    runs-on: ubuntu-latest
+    needs:
+      - build-backend
+      - build-frontend
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-source
+          path: .
+
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: .
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Transfer application artifacts to remote server
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes backend-source.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/backend-source.tar.gz"
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes frontend-build.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/frontend-build.tar.gz"
+
+      - name: Execute remote deployment script
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          REMOTE_ENV="DATABASE_URL=$(printf '%q' "$DATABASE_URL") FLASK_SECRET_KEY=$(printf '%q' "$FLASK_SECRET_KEY")"
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "${REMOTE_ENV} bash -s" <<'EOF'
+            set -euo pipefail
+            REMOTE_BASE=/opt/myapp
+            REMOTE_BACKEND=${REMOTE_BASE}/backend
+            REMOTE_FRONTEND=/var/www/myapp
+            REMOTE_VENV=${REMOTE_BASE}/venv
+            REMOTE_LOGS=${REMOTE_BASE}/logs
+            REMOTE_BACKUPS=${REMOTE_BASE}/backups
+            REMOTE_SCRIPTS=${REMOTE_BASE}/scripts
+            BACKUP_TS=$(date +%Y%m%d%H%M%S)
+            BACKEND_BACKUP=${REMOTE_BACKUPS}/backend-backup-${BACKUP_TS}.tar.gz
+            FRONTEND_BACKUP=${REMOTE_BACKUPS}/frontend-backup-${BACKUP_TS}.tar.gz
+            NGINX_CONFIG=/etc/nginx/sites-available/myapp
+            NGINX_ENABLED=/etc/nginx/sites-enabled/myapp
+            ROLLBACK_PERFORMED=false
+
+            function rollback() {
+              echo '--- Rollback initiated ---'
+              if [ -f "${BACKEND_BACKUP}" ]; then
+                echo 'Restoring backend backup'
+                sudo tar -xzf "${BACKEND_BACKUP}" -C "${REMOTE_BACKEND}"
+              fi
+              if [ -f "${FRONTEND_BACKUP}" ]; then
+                echo 'Restoring frontend backup'
+                sudo rm -rf "${REMOTE_FRONTEND}"/*
+                sudo tar -xzf "${FRONTEND_BACKUP}" -C "${REMOTE_FRONTEND}"
+              fi
+              echo 'Restarting Gunicorn service after rollback'
+              sudo systemctl restart myapp-gunicorn || true
+              echo 'Reloading Nginx after rollback'
+              sudo nginx -t && sudo systemctl reload nginx || true
+              ROLLBACK_PERFORMED=true
+            }
+
+            trap 'echo "Deployment failed."; rollback; exit 1' ERR
+
+            echo 'Creating required directories'
+            sudo mkdir -p "${REMOTE_BACKEND}" "${REMOTE_VENV}" "${REMOTE_LOGS}" "${REMOTE_BACKUPS}" "${REMOTE_SCRIPTS}" "${REMOTE_FRONTEND}"
+            sudo chown -R $USER:$USER "${REMOTE_BASE}" || true
+            sudo chown -R www-data:www-data "${REMOTE_FRONTEND}" || true
+
+            echo 'Backing up current backend state'
+            if [ -d "${REMOTE_BACKEND}" ]; then
+              sudo tar -czf "${BACKEND_BACKUP}" -C "${REMOTE_BACKEND}" .
+            fi
+            echo 'Backing up current frontend state'
+            if [ -d "${REMOTE_FRONTEND}" ]; then
+              sudo tar -czf "${FRONTEND_BACKUP}" -C "${REMOTE_FRONTEND}" .
+            fi
+
+            echo 'Extracting backend artifact'
+            mkdir -p /tmp/deploy-backend
+            rm -rf /tmp/deploy-backend/*
+            tar -xzf /tmp/backend-source.tar.gz -C /tmp/deploy-backend
+            sudo rsync -a --delete /tmp/deploy-backend/ "${REMOTE_BACKEND}/"
+            sudo chown -R $USER:$USER "${REMOTE_BACKEND}"
+
+            echo 'Preparing frontend release'
+            mkdir -p /tmp/deploy-frontend
+            rm -rf /tmp/deploy-frontend/*
+            tar -xzf /tmp/frontend-build.tar.gz -C /tmp/deploy-frontend
+            sudo rsync -a --delete /tmp/deploy-frontend/ "${REMOTE_FRONTEND}/"
+            sudo chown -R www-data:www-data "${REMOTE_FRONTEND}"
+
+            echo 'Configuring Python virtual environment'
+            PYTHON_BIN=$(command -v python3.13 || command -v python3)
+            if [ -z "${PYTHON_BIN}" ]; then
+              echo 'Python 3 is not installed on the remote host'
+              exit 1
+            fi
+            if [ ! -d "${REMOTE_VENV}/bin" ]; then
+              "${PYTHON_BIN}" -m venv "${REMOTE_VENV}"
+            fi
+            sudo chown -R $USER:$USER "${REMOTE_VENV}"
+            source "${REMOTE_VENV}/bin/activate"
+            python -m pip install --upgrade pip
+            if [ -f "${REMOTE_BACKEND}/requirements.txt" ]; then
+              python -m pip install -r "${REMOTE_BACKEND}/requirements.txt"
+            fi
+
+            echo 'Verifying Gunicorn installation'
+            if ! python -m gunicorn --version >/dev/null 2>&1; then
+              echo 'Gunicorn is not installed in virtualenv'
+              exit 1
+            fi
+
+            echo 'Writing backend environment configuration'
+            sudo tee "${REMOTE_BACKEND}/.env" > /dev/null <<EOV
+            DATABASE_URL=${DATABASE_URL}
+            SECRET_KEY=${FLASK_SECRET_KEY}
+            FLASK_ENV=production
+            EOV
+            sudo chown $USER:$USER "${REMOTE_BACKEND}/.env"
+            sudo chmod 600 "${REMOTE_BACKEND}/.env"
+
+            echo 'Ensuring Nginx configuration for app'
+            sudo tee "${NGINX_CONFIG}" > /dev/null <<'NGINX_CONF'
+            server {
+                listen 80;
+                server_name _;
+
+                root /var/www/myapp;
+                index index.html;
+
+                location /api {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location / {
+                    try_files $uri $uri/ /index.html;
+                }
+
+                location ~* \.(?:css|js|png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot)$ {
+                    expires 30d;
+                    add_header Cache-Control "public, immutable";
+                }
+            }
+            NGINX_CONF
+            sudo ln -sf "${NGINX_CONFIG}" "${NGINX_ENABLED}"
+
+            echo 'Reloading systemd and services'
+            sudo systemctl daemon-reload || true
+            sudo systemctl restart myapp-gunicorn
+            sudo systemctl is-active --quiet myapp-gunicorn
+            sudo nginx -t
+            sudo systemctl reload nginx
+
+            echo 'Remote health checks on web server'
+            sudo systemctl is-active --quiet nginx
+            sudo systemctl is-active --quiet myapp-gunicorn
+            python -c 'import socket, sys; s=socket.socket(); s.settimeout(5); s.connect(("127.0.0.1",8000)); s.close()'
+            if printf '%s' "${DATABASE_URL}" | grep -Eq '^postgres(ql)?://'; then
+              python - <<'PY'
+            import os
+            import socket
+            from urllib.parse import urlparse
+
+            database_url = os.environ["DATABASE_URL"]
+            parsed = urlparse(database_url)
+            host = parsed.hostname
+            port = parsed.port or 5432
+
+            if host:
+                sock = socket.socket()
+                sock.settimeout(5)
+                sock.connect((host, port))
+                sock.close()
+            PY
+            else
+              echo 'Skipping external database port check for non-PostgreSQL DATABASE_URL'
+            fi
+
+            echo 'Deployment completed successfully on remote host'
+            EOF
+
+      - name: Verify external HTTP access
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --max-time 15 "http://${{ secrets.SSH_HOST }}"
