@@ -172,8 +172,11 @@ jobs:
       - name: Transfer application artifacts to remote server
         run: |
           set -euo pipefail
+          echo 'Checking SSH connectivity'
           ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "test -w /tmp"
+          echo 'Uploading backend artifact'
           scp -O -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes backend-source.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/backend-source.tar.gz"
+          echo 'Uploading frontend artifact'
           scp -O -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes frontend-build.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/frontend-build.tar.gz"
 
       - name: Execute remote deployment script
