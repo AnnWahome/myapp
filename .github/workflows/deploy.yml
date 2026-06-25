@@ -97,9 +97,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          repository: John-thabuks/culinaryconnect
-          ref: main
-          path: culinaryconnect
           fetch-depth: 0
 
       - name: Set up Node.js LTS
@@ -112,18 +109,16 @@ jobs:
       - name: Install frontend dependencies
         run: |
           set -euo pipefail
-          cd culinaryconnect
-          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            npm ci
+          if [ -f culinaryconnect/package-lock.json ] || [ -f culinaryconnect/npm-shrinkwrap.json ]; then
+            cd culinaryconnect && npm ci
           else
-            npm install
+            cd culinaryconnect && npm install
           fi
 
       - name: Build React app
         run: |
           set -euo pipefail
-          cd culinaryconnect
-          npm run build
+          cd culinaryconnect && npm run build
 
       - name: Package frontend build artifact
         run: |
