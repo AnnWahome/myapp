@@ -1,0 +1,21 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+bcrypt = "*"
+flask-bcrypt = "*"
+python-dotenv = "*"
+faker = "*"
+flask-cors = "*"
+flask-sqlalchemy = "*"
+flask-migrate = "*"
+gunicorn = "*"
+psycopg2-binary = "*"
+flask = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.13"
