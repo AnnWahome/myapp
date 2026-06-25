@@ -20,7 +20,7 @@ concurrency:
 defaults:
   run:
     shell: bash
-    working-directory: ${{ github.workspace }}
+    working-directory: .
 
 env:
   ENVIRONMENT: production
