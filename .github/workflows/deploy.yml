@@ -262,7 +262,33 @@ jobs:
           sudo chown $USER:$USER "${REMOTE_BACKEND}/.env"
           sudo chmod 600 "${REMOTE_BACKEND}/.env"
 
+          echo 'Ensuring Gunicorn systemd service'
+          sudo tee /etc/systemd/system/myapp-gunicorn.service > /dev/null <<EOV
+          [Unit]
+          Description=MyApp Gunicorn Service
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          Group=www-data
+          WorkingDirectory=${REMOTE_BACKEND}
+          EnvironmentFile=${REMOTE_BACKEND}/.env
+          ExecStart=${REMOTE_VENV}/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 wsgi:app
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          EOV
+
+          echo 'Ensuring Nginx is installed'
+          if ! command -v nginx >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
+          fi
+
           echo 'Ensuring Nginx configuration for app'
+          sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
           sudo tee "${NGINX_CONFIG}" > /dev/null <<'NGINX_CONF'
           server {
               listen 80;
@@ -293,9 +319,11 @@ jobs:
 
           echo 'Reloading systemd and services'
           sudo systemctl daemon-reload || true
+          sudo systemctl enable myapp-gunicorn
           sudo systemctl restart myapp-gunicorn
           sudo systemctl is-active --quiet myapp-gunicorn
           sudo nginx -t
+          sudo systemctl enable nginx
           sudo systemctl reload nginx
 
           echo 'Local health checks on webserver'
