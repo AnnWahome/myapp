@@ -149,17 +149,23 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Prepare artifact staging directories
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/myapp-artifacts
+          mkdir -p /tmp/myapp-artifacts/backend /tmp/myapp-artifacts/frontend
+
       - name: Download backend artifact
         uses: actions/download-artifact@v8
         with:
           name: backend-source
-          path: .
+          path: /tmp/myapp-artifacts/backend
 
       - name: Download frontend artifact
         uses: actions/download-artifact@v8
         with:
           name: frontend-build
-          path: .
+          path: /tmp/myapp-artifacts/frontend
 
       - name: Deploy application on webserver
         env:
@@ -220,14 +226,14 @@ jobs:
           echo 'Extracting backend artifact'
           mkdir -p /tmp/deploy-backend
           rm -rf /tmp/deploy-backend/*
-          tar -xzf backend-source.tar.gz -C /tmp/deploy-backend
+          tar -xzf /tmp/myapp-artifacts/backend/backend-source.tar.gz -C /tmp/deploy-backend
           sudo rsync -a --delete /tmp/deploy-backend/ "${REMOTE_BACKEND}/"
           sudo chown -R $USER:$USER "${REMOTE_BACKEND}"
 
           echo 'Preparing frontend release'
           mkdir -p /tmp/deploy-frontend
           rm -rf /tmp/deploy-frontend/*
-          tar -xzf frontend-build.tar.gz -C /tmp/deploy-frontend
+          tar -xzf /tmp/myapp-artifacts/frontend/frontend-build.tar.gz -C /tmp/deploy-frontend
           sudo rsync -a --delete /tmp/deploy-frontend/ "${REMOTE_FRONTEND}/"
           sudo chown -R www-data:www-data "${REMOTE_FRONTEND}"
 
