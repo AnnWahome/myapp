@@ -291,7 +291,8 @@ jobs:
           sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
           sudo tee "${NGINX_CONFIG}" > /dev/null <<'NGINX_CONF'
           server {
-              listen 80;
+              listen 80 default_server;
+              listen [::]:80 default_server;
               server_name _;
 
               root /var/www/myapp;
@@ -316,6 +317,7 @@ jobs:
           }
           NGINX_CONF
           sudo ln -sf "${NGINX_CONFIG}" "${NGINX_ENABLED}"
+          sudo rm -f /etc/nginx/sites-enabled/default
 
           echo 'Reloading systemd and services'
           sudo systemctl daemon-reload || true
