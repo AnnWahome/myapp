@@ -167,6 +167,8 @@ jobs:
           FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
         run: |
           set -euo pipefail
+          echo 'Verifying passwordless sudo access'
+          sudo -n true
           REMOTE_BASE=/opt/myapp
           REMOTE_BACKEND=${REMOTE_BASE}/backend
           REMOTE_FRONTEND=/var/www/myapp
